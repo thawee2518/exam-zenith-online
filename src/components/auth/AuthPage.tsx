@@ -10,9 +10,9 @@ import { useToast } from '@/hooks/use-toast';
 
 const AuthPage = () => {
   const [isLogin, setIsLogin] = useState(true);
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
   const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [username, setUsername] = useState('');
   const [name, setName] = useState('');
   const [role, setRole] = useState<'admin' | 'student'>('student');
   
@@ -27,25 +27,36 @@ const AuthPage = () => {
       let success = false;
       
       if (isLogin) {
-        success = await login(username, password);
+        success = await login(email, password);
       } else {
-        success = await register({ username, email, role, name });
+        if (!username || !name) {
+          toast({
+            title: "ข้อผิดพลาด",
+            description: "กรุณากรอกข้อมูลให้ครบถ้วน",
+            variant: "destructive"
+          });
+          return;
+        }
+        success = await register({ email, password, username, name, role });
       }
       
       if (success) {
         toast({
           title: "สำเร็จ",
-          description: isLogin ? "เข้าสู่ระบบสำเร็จ" : "ลงทะเบียนสำเร็จ",
+          description: isLogin ? "เข้าสู่ระบบสำเร็จ" : "ลงทะเบียนสำเร็จ กรุณาตรวจสอบอีเมลเพื่อยืนยันบัญชี",
         });
-        navigate('/');
+        if (isLogin) {
+          navigate('/');
+        }
       } else {
         toast({
           title: "ข้อผิดพลาด",
-          description: isLogin ? "ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง" : "การลงทะเบียนล้มเหลว",
+          description: isLogin ? "อีเมลหรือรหัสผ่านไม่ถูกต้อง" : "การลงทะเบียนล้มเหลว",
           variant: "destructive"
         });
       }
     } catch (error) {
+      console.error('Auth error:', error);
       toast({
         title: "ข้อผิดพลาด",
         description: "เกิดข้อผิดพลาดในระบบ",
@@ -78,14 +89,14 @@ const AuthPage = () => {
           <CardContent>
             <form onSubmit={handleSubmit} className="space-y-4">
               <div className="space-y-2">
-                <label className="text-sm font-medium text-gray-700">ชื่อผู้ใช้</label>
+                <label className="text-sm font-medium text-gray-700">อีเมล</label>
                 <div className="relative">
-                  <User className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
+                  <Mail className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
                   <Input
-                    type="text"
-                    placeholder="ใส่ชื่อผู้ใช้"
-                    value={username}
-                    onChange={(e) => setUsername(e.target.value)}
+                    type="email"
+                    placeholder="ใส่อีเมล"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
                     className="pl-10"
                     required
                   />
@@ -95,6 +106,21 @@ const AuthPage = () => {
               {!isLogin && (
                 <>
                   <div className="space-y-2">
+                    <label className="text-sm font-medium text-gray-700">ชื่อผู้ใช้</label>
+                    <div className="relative">
+                      <User className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
+                      <Input
+                        type="text"
+                        placeholder="ใส่ชื่อผู้ใช้"
+                        value={username}
+                        onChange={(e) => setUsername(e.target.value)}
+                        className="pl-10"
+                        required
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
                     <label className="text-sm font-medium text-gray-700">ชื่อจริง</label>
                     <div className="relative">
                       <UserPlus className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
@@ -103,21 +129,6 @@ const AuthPage = () => {
                         placeholder="ใส่ชื่อจริง"
                         value={name}
                         onChange={(e) => setName(e.target.value)}
-                        className="pl-10"
-                        required
-                      />
-                    </div>
-                  </div>
-
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-gray-700">อีเมล</label>
-                    <div className="relative">
-                      <Mail className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
-                      <Input
-                        type="email"
-                        placeholder="ใส่อีเมล"
-                        value={email}
-                        onChange={(e) => setEmail(e.target.value)}
                         className="pl-10"
                         required
                       />
@@ -174,9 +185,8 @@ const AuthPage = () => {
 
             {isLogin && (
               <div className="mt-4 p-3 bg-blue-50 rounded-lg text-xs text-blue-700">
-                <p className="font-medium">ทดสอบระบบ:</p>
-                <p>Admin: username = admin, password = password</p>
-                <p>Student: username = student, password = password</p>
+                <p className="font-medium">สำหรับทดสอบ:</p>
+                <p>สร้างบัญชีใหม่หรือใช้บัญชีที่มีอยู่แล้ว</p>
               </div>
             )}
           </CardContent>
