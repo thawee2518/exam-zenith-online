@@ -1,20 +1,32 @@
 
-import React, { createContext, useContext, useState, useEffect } from 'react';
-import { ExamSet, Question, ExamAttempt, ExamStats } from '@/types/exam';
+import React, { createContext, useContext, useState } from 'react';
+import { ExamSet, Question, ExamAttempt } from '@/types/exam';
+import { supabase } from '@/integrations/supabase/client';
 
 interface ExamContextType {
   examSets: ExamSet[];
   currentExam: ExamSet | null;
-  userAttempts: ExamAttempt[];
-  createExamSet: (examSet: Omit<ExamSet, 'id' | 'createdAt' | 'questions'>) => string;
-  updateExamSet: (id: string, updates: Partial<ExamSet>) => void;
-  deleteExamSet: (id: string) => void;
-  addQuestion: (examSetId: string, question: Omit<Question, 'id' | 'examSetId'>) => void;
-  updateQuestion: (questionId: string, updates: Partial<Question>) => void;
-  deleteQuestion: (questionId: string) => void;
-  setCurrentExam: (examSet: ExamSet | null) => void;
-  submitExamAttempt: (attempt: Omit<ExamAttempt, 'id'>) => void;
-  getExamStats: (examSetId: string) => ExamStats;
+  currentAttempt: ExamAttempt | null;
+  loading: boolean;
+  
+  // Exam management
+  fetchExamSets: () => Promise<void>;
+  createExamSet: (examSet: Omit<ExamSet, 'id' | 'createdAt' | 'questions'>) => Promise<string | null>;
+  updateExamSet: (id: string, updates: Partial<ExamSet>) => Promise<boolean>;
+  deleteExamSet: (id: string) => Promise<boolean>;
+  
+  // Question management
+  addQuestion: (examSetId: string, question: Omit<Question, 'id' | 'examSetId'>) => Promise<boolean>;
+  updateQuestion: (id: string, updates: Partial<Question>) => Promise<boolean>;
+  deleteQuestion: (id: string) => Promise<boolean>;
+  
+  // Exam taking
+  startExam: (examSetId: string) => Promise<boolean>;
+  submitAnswer: (questionId: string, selectedAnswer: number) => void;
+  submitExam: () => Promise<boolean>;
+  
+  // Results
+  fetchExamAttempts: (studentId?: string) => Promise<ExamAttempt[]>;
 }
 
 const ExamContext = createContext<ExamContextType | undefined>(undefined);
@@ -30,178 +42,321 @@ export const useExam = () => {
 export const ExamProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [examSets, setExamSets] = useState<ExamSet[]>([]);
   const [currentExam, setCurrentExam] = useState<ExamSet | null>(null);
-  const [userAttempts, setUserAttempts] = useState<ExamAttempt[]>([]);
+  const [currentAttempt, setCurrentAttempt] = useState<ExamAttempt | null>(null);
+  const [loading, setLoading] = useState(false);
 
-  useEffect(() => {
-    // Load data from localStorage
-    const storedExamSets = localStorage.getItem('examSets');
-    const storedAttempts = localStorage.getItem('examAttempts');
+  const fetchExamSets = async () => {
+    setLoading(true);
+    try {
+      const { data: examSetsData, error: examSetsError } = await supabase
+        .from('exam_sets')
+        .select('*')
+        .eq('is_active', true);
+
+      if (examSetsError) throw examSetsError;
+
+      const examSetsWithQuestions = await Promise.all(
+        examSetsData.map(async (examSet) => {
+          const { data: questions, error: questionsError } = await supabase
+            .from('questions')
+            .select('*')
+            .eq('exam_set_id', examSet.id)
+            .order('order_num');
+
+          if (questionsError) throw questionsError;
+
+          return {
+            id: examSet.id,
+            title: examSet.title,
+            description: examSet.description || '',
+            createdBy: examSet.created_by,
+            createdAt: new Date(examSet.created_at),
+            isActive: examSet.is_active,
+            timeLimit: examSet.time_limit,
+            questions: questions.map(q => ({
+              id: q.id,
+              examSetId: q.exam_set_id,
+              questionText: q.question_text,
+              imageUrl: q.image_url,
+              options: q.options as string[],
+              correctAnswer: q.correct_answer,
+              order: q.order_num
+            }))
+          } as ExamSet;
+        })
+      );
+
+      setExamSets(examSetsWithQuestions);
+    } catch (error) {
+      console.error('Error fetching exam sets:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const createExamSet = async (examSetData: Omit<ExamSet, 'id' | 'createdAt' | 'questions'>): Promise<string | null> => {
+    try {
+      const { data, error } = await supabase
+        .from('exam_sets')
+        .insert({
+          title: examSetData.title,
+          description: examSetData.description,
+          created_by: examSetData.createdBy,
+          is_active: examSetData.isActive,
+          time_limit: examSetData.timeLimit
+        })
+        .select()
+        .single();
+
+      if (error) throw error;
+      
+      await fetchExamSets(); // Refresh the list
+      return data.id;
+    } catch (error) {
+      console.error('Error creating exam set:', error);
+      return null;
+    }
+  };
+
+  const updateExamSet = async (id: string, updates: Partial<ExamSet>): Promise<boolean> => {
+    try {
+      const { error } = await supabase
+        .from('exam_sets')
+        .update({
+          title: updates.title,
+          description: updates.description,
+          is_active: updates.isActive,
+          time_limit: updates.timeLimit
+        })
+        .eq('id', id);
+
+      if (error) throw error;
+      
+      await fetchExamSets(); // Refresh the list
+      return true;
+    } catch (error) {
+      console.error('Error updating exam set:', error);
+      return false;
+    }
+  };
+
+  const deleteExamSet = async (id: string): Promise<boolean> => {
+    try {
+      const { error } = await supabase
+        .from('exam_sets')
+        .delete()
+        .eq('id', id);
+
+      if (error) throw error;
+      
+      await fetchExamSets(); // Refresh the list
+      return true;
+    } catch (error) {
+      console.error('Error deleting exam set:', error);
+      return false;
+    }
+  };
+
+  const addQuestion = async (examSetId: string, questionData: Omit<Question, 'id' | 'examSetId'>): Promise<boolean> => {
+    try {
+      const { error } = await supabase
+        .from('questions')
+        .insert({
+          exam_set_id: examSetId,
+          question_text: questionData.questionText,
+          image_url: questionData.imageUrl,
+          options: questionData.options,
+          correct_answer: questionData.correctAnswer,
+          order_num: questionData.order
+        });
+
+      if (error) throw error;
+      
+      await fetchExamSets(); // Refresh to get updated questions
+      return true;
+    } catch (error) {
+      console.error('Error adding question:', error);
+      return false;
+    }
+  };
+
+  const updateQuestion = async (id: string, updates: Partial<Question>): Promise<boolean> => {
+    try {
+      const { error } = await supabase
+        .from('questions')
+        .update({
+          question_text: updates.questionText,
+          image_url: updates.imageUrl,
+          options: updates.options,
+          correct_answer: updates.correctAnswer,
+          order_num: updates.order
+        })
+        .eq('id', id);
+
+      if (error) throw error;
+      
+      await fetchExamSets(); // Refresh to get updated questions
+      return true;
+    } catch (error) {
+      console.error('Error updating question:', error);
+      return false;
+    }
+  };
+
+  const deleteQuestion = async (id: string): Promise<boolean> => {
+    try {
+      const { error } = await supabase
+        .from('questions')
+        .delete()
+        .eq('id', id);
+
+      if (error) throw error;
+      
+      await fetchExamSets(); // Refresh to get updated questions
+      return true;
+    } catch (error) {
+      console.error('Error deleting question:', error);
+      return false;
+    }
+  };
+
+  const startExam = async (examSetId: string): Promise<boolean> => {
+    const examSet = examSets.find(e => e.id === examSetId);
+    if (!examSet) return false;
+
+    const attempt: ExamAttempt = {
+      id: crypto.randomUUID(),
+      studentId: '', // Will be set when submitting
+      examSetId,
+      answers: [],
+      score: 0,
+      totalQuestions: examSet.questions.length,
+      startTime: new Date(),
+      endTime: new Date(),
+      isCompleted: false
+    };
+
+    setCurrentExam(examSet);
+    setCurrentAttempt(attempt);
+    return true;
+  };
+
+  const submitAnswer = (questionId: string, selectedAnswer: number) => {
+    if (!currentAttempt) return;
+
+    const updatedAnswers = [...currentAttempt.answers];
+    const existingIndex = updatedAnswers.findIndex(a => a.questionId === questionId);
     
-    if (storedExamSets) {
-      setExamSets(JSON.parse(storedExamSets));
+    if (existingIndex >= 0) {
+      updatedAnswers[existingIndex].selectedAnswer = selectedAnswer;
     } else {
-      // Create demo exam set
-      const demoExamSet: ExamSet = {
-        id: 'demo-1',
-        title: 'ทดสอบความรู้พื้นฐาน',
-        description: 'ข้อสอบตัวอย่างสำหรับทดสอบระบบ',
-        createdBy: '1',
-        createdAt: new Date(),
-        isActive: true,
-        timeLimit: 30,
-        questions: [
-          {
-            id: 'q1',
-            examSetId: 'demo-1',
-            questionText: 'ข้อใดเป็นเมืองหลวงของประเทศไทย?',
-            options: ['เชียงใหม่', 'กรุงเทพมหานคร', 'ขอนแก่น', 'หาดใหญ่'],
-            correctAnswer: 1,
-            order: 1
-          },
-          {
-            id: 'q2',
-            examSetId: 'demo-1',
-            questionText: '2 + 2 = ?',
-            options: ['3', '4', '5', '6'],
-            correctAnswer: 1,
-            order: 2
-          }
-        ]
-      };
-      setExamSets([demoExamSet]);
-      localStorage.setItem('examSets', JSON.stringify([demoExamSet]));
+      updatedAnswers.push({ questionId, selectedAnswer });
     }
-    
-    if (storedAttempts) {
-      setUserAttempts(JSON.parse(storedAttempts));
-    }
-  }, []);
 
-  const createExamSet = (examSetData: Omit<ExamSet, 'id' | 'createdAt' | 'questions'>): string => {
-    const newExamSet: ExamSet = {
-      ...examSetData,
-      id: Date.now().toString(),
-      createdAt: new Date(),
-      questions: []
-    };
-    
-    const updatedExamSets = [...examSets, newExamSet];
-    setExamSets(updatedExamSets);
-    localStorage.setItem('examSets', JSON.stringify(updatedExamSets));
-    
-    return newExamSet.id;
-  };
-
-  const updateExamSet = (id: string, updates: Partial<ExamSet>) => {
-    const updatedExamSets = examSets.map(exam => 
-      exam.id === id ? { ...exam, ...updates } : exam
-    );
-    setExamSets(updatedExamSets);
-    localStorage.setItem('examSets', JSON.stringify(updatedExamSets));
-  };
-
-  const deleteExamSet = (id: string) => {
-    const updatedExamSets = examSets.filter(exam => exam.id !== id);
-    setExamSets(updatedExamSets);
-    localStorage.setItem('examSets', JSON.stringify(updatedExamSets));
-  };
-
-  const addQuestion = (examSetId: string, questionData: Omit<Question, 'id' | 'examSetId'>) => {
-    const newQuestion: Question = {
-      ...questionData,
-      id: Date.now().toString(),
-      examSetId
-    };
-    
-    const updatedExamSets = examSets.map(exam => {
-      if (exam.id === examSetId) {
-        return {
-          ...exam,
-          questions: [...exam.questions, newQuestion]
-        };
-      }
-      return exam;
+    setCurrentAttempt({
+      ...currentAttempt,
+      answers: updatedAnswers
     });
-    
-    setExamSets(updatedExamSets);
-    localStorage.setItem('examSets', JSON.stringify(updatedExamSets));
   };
 
-  const updateQuestion = (questionId: string, updates: Partial<Question>) => {
-    const updatedExamSets = examSets.map(exam => ({
-      ...exam,
-      questions: exam.questions.map(q => 
-        q.id === questionId ? { ...q, ...updates } : q
-      )
-    }));
-    
-    setExamSets(updatedExamSets);
-    localStorage.setItem('examSets', JSON.stringify(updatedExamSets));
-  };
+  const submitExam = async (): Promise<boolean> => {
+    if (!currentAttempt || !currentExam) return false;
 
-  const deleteQuestion = (questionId: string) => {
-    const updatedExamSets = examSets.map(exam => ({
-      ...exam,
-      questions: exam.questions.filter(q => q.id !== questionId)
-    }));
-    
-    setExamSets(updatedExamSets);
-    localStorage.setItem('examSets', JSON.stringify(updatedExamSets));
-  };
+    try {
+      // Calculate score
+      let score = 0;
+      currentAttempt.answers.forEach(answer => {
+        const question = currentExam.questions.find(q => q.id === answer.questionId);
+        if (question && question.correctAnswer === answer.selectedAnswer) {
+          score++;
+        }
+      });
 
-  const submitExamAttempt = (attemptData: Omit<ExamAttempt, 'id'>) => {
-    const newAttempt: ExamAttempt = {
-      ...attemptData,
-      id: Date.now().toString()
-    };
-    
-    const updatedAttempts = [...userAttempts, newAttempt];
-    setUserAttempts(updatedAttempts);
-    localStorage.setItem('examAttempts', JSON.stringify(updatedAttempts));
-  };
+      const endTime = new Date();
+      const { data: { user } } = await supabase.auth.getUser();
+      
+      if (!user) throw new Error('User not authenticated');
 
-  const getExamStats = (examSetId: string): ExamStats => {
-    const attempts = userAttempts.filter(attempt => attempt.examSetId === examSetId);
-    
-    if (attempts.length === 0) {
-      return {
-        totalAttempts: 0,
-        averageScore: 0,
-        highestScore: 0,
-        lowestScore: 0,
-        passRate: 0
-      };
+      const { error } = await supabase
+        .from('exam_attempts')
+        .insert({
+          student_id: user.id,
+          exam_set_id: currentAttempt.examSetId,
+          answers: currentAttempt.answers,
+          score,
+          total_questions: currentAttempt.totalQuestions,
+          start_time: currentAttempt.startTime.toISOString(),
+          end_time: endTime.toISOString(),
+          is_completed: true
+        });
+
+      if (error) throw error;
+
+      setCurrentAttempt({
+        ...currentAttempt,
+        score,
+        endTime,
+        isCompleted: true
+      });
+
+      return true;
+    } catch (error) {
+      console.error('Error submitting exam:', error);
+      return false;
     }
-    
-    const scores = attempts.map(attempt => (attempt.score / attempt.totalQuestions) * 100);
-    const averageScore = scores.reduce((sum, score) => sum + score, 0) / scores.length;
-    const highestScore = Math.max(...scores);
-    const lowestScore = Math.min(...scores);
-    const passRate = (scores.filter(score => score >= 60).length / scores.length) * 100;
-    
-    return {
-      totalAttempts: attempts.length,
-      averageScore,
-      highestScore,
-      lowestScore,
-      passRate
-    };
+  };
+
+  const fetchExamAttempts = async (studentId?: string): Promise<ExamAttempt[]> => {
+    try {
+      let query = supabase
+        .from('exam_attempts')
+        .select(`
+          *,
+          exam_sets!inner(title)
+        `);
+
+      if (studentId) {
+        query = query.eq('student_id', studentId);
+      }
+
+      const { data, error } = await query.order('created_at', { ascending: false });
+
+      if (error) throw error;
+
+      return data.map(attempt => ({
+        id: attempt.id,
+        studentId: attempt.student_id,
+        examSetId: attempt.exam_set_id,
+        answers: attempt.answers as { questionId: string; selectedAnswer: number }[],
+        score: attempt.score,
+        totalQuestions: attempt.total_questions,
+        startTime: new Date(attempt.start_time),
+        endTime: new Date(attempt.end_time),
+        isCompleted: attempt.is_completed
+      }));
+    } catch (error) {
+      console.error('Error fetching exam attempts:', error);
+      return [];
+    }
   };
 
   return (
     <ExamContext.Provider value={{
       examSets,
       currentExam,
-      userAttempts,
+      currentAttempt,
+      loading,
+      fetchExamSets,
       createExamSet,
       updateExamSet,
       deleteExamSet,
       addQuestion,
       updateQuestion,
       deleteQuestion,
-      setCurrentExam,
-      submitExamAttempt,
-      getExamStats
+      startExam,
+      submitAnswer,
+      submitExam,
+      fetchExamAttempts
     }}>
       {children}
     </ExamContext.Provider>

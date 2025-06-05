@@ -1,7 +1,7 @@
 
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { User } from '@/types/exam';
-import { supabase, type Profile } from '@/lib/supabase';
+import { supabase } from '@/integrations/supabase/client';
 import { Session, User as SupabaseUser } from '@supabase/supabase-js';
 
 interface AuthContextType {
@@ -23,7 +23,7 @@ export const useAuth = () => {
 };
 
 // Helper function to convert Supabase profile to our User type
-const convertProfileToUser = (profile: Profile, email?: string): User => ({
+const convertProfileToUser = (profile: any, email?: string): User => ({
   id: profile.id,
   username: profile.username,
   email: email,
