@@ -1,12 +1,14 @@
 
-import React, { createContext, useContext, useState } from 'react';
-import { ExamSet, Question, ExamAttempt } from '@/types/exam';
+import React, { createContext, useContext, useState, useEffect } from 'react';
+import { ExamSet, Question, ExamAttempt, ExamStats } from '@/types/exam';
 import { supabase } from '@/integrations/supabase/client';
+import { useAuth } from '@/contexts/AuthContext';
 
 interface ExamContextType {
   examSets: ExamSet[];
   currentExam: ExamSet | null;
   currentAttempt: ExamAttempt | null;
+  userAttempts: ExamAttempt[];
   loading: boolean;
   
   // Exam management
@@ -24,9 +26,11 @@ interface ExamContextType {
   startExam: (examSetId: string) => Promise<boolean>;
   submitAnswer: (questionId: string, selectedAnswer: number) => void;
   submitExam: () => Promise<boolean>;
+  submitExamAttempt: (attempt: Omit<ExamAttempt, 'id'>) => Promise<boolean>;
   
-  // Results
+  // Results and stats
   fetchExamAttempts: (studentId?: string) => Promise<ExamAttempt[]>;
+  getExamStats: (examSetId: string) => ExamStats;
 }
 
 const ExamContext = createContext<ExamContextType | undefined>(undefined);
@@ -40,10 +44,32 @@ export const useExam = () => {
 };
 
 export const ExamProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { user } = useAuth();
   const [examSets, setExamSets] = useState<ExamSet[]>([]);
   const [currentExam, setCurrentExam] = useState<ExamSet | null>(null);
   const [currentAttempt, setCurrentAttempt] = useState<ExamAttempt | null>(null);
+  const [userAttempts, setUserAttempts] = useState<ExamAttempt[]>([]);
   const [loading, setLoading] = useState(false);
+
+  // Fetch user attempts when user changes
+  useEffect(() => {
+    if (user) {
+      fetchUserAttempts();
+    } else {
+      setUserAttempts([]);
+    }
+  }, [user]);
+
+  const fetchUserAttempts = async () => {
+    if (!user) return;
+    
+    try {
+      const attempts = await fetchExamAttempts(user.id);
+      setUserAttempts(attempts);
+    } catch (error) {
+      console.error('Error fetching user attempts:', error);
+    }
+  };
 
   const fetchExamSets = async () => {
     setLoading(true);
@@ -226,7 +252,7 @@ export const ExamProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const attempt: ExamAttempt = {
       id: crypto.randomUUID(),
-      studentId: '', // Will be set when submitting
+      studentId: user?.id || '',
       examSetId,
       answers: [],
       score: 0,
@@ -299,9 +325,39 @@ export const ExamProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isCompleted: true
       });
 
+      // Refresh user attempts
+      await fetchUserAttempts();
+
       return true;
     } catch (error) {
       console.error('Error submitting exam:', error);
+      return false;
+    }
+  };
+
+  const submitExamAttempt = async (attemptData: Omit<ExamAttempt, 'id'>): Promise<boolean> => {
+    try {
+      const { error } = await supabase
+        .from('exam_attempts')
+        .insert({
+          student_id: attemptData.studentId,
+          exam_set_id: attemptData.examSetId,
+          answers: attemptData.answers,
+          score: attemptData.score,
+          total_questions: attemptData.totalQuestions,
+          start_time: attemptData.startTime.toISOString(),
+          end_time: attemptData.endTime.toISOString(),
+          is_completed: attemptData.isCompleted
+        });
+
+      if (error) throw error;
+
+      // Refresh user attempts
+      await fetchUserAttempts();
+
+      return true;
+    } catch (error) {
+      console.error('Error submitting exam attempt:', error);
       return false;
     }
   };
@@ -340,11 +396,41 @@ export const ExamProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  const getExamStats = (examSetId: string): ExamStats => {
+    const examAttempts = userAttempts.filter(attempt => attempt.examSetId === examSetId);
+    
+    if (examAttempts.length === 0) {
+      return {
+        totalAttempts: 0,
+        averageScore: 0,
+        highestScore: 0,
+        lowestScore: 0,
+        passRate: 0
+      };
+    }
+
+    const scores = examAttempts.map(attempt => (attempt.score / attempt.totalQuestions) * 100);
+    const totalAttempts = examAttempts.length;
+    const averageScore = scores.reduce((sum, score) => sum + score, 0) / totalAttempts;
+    const highestScore = Math.max(...scores);
+    const lowestScore = Math.min(...scores);
+    const passRate = (scores.filter(score => score >= 60).length / totalAttempts) * 100;
+
+    return {
+      totalAttempts,
+      averageScore,
+      highestScore,
+      lowestScore,
+      passRate
+    };
+  };
+
   return (
     <ExamContext.Provider value={{
       examSets,
       currentExam,
       currentAttempt,
+      userAttempts,
       loading,
       fetchExamSets,
       createExamSet,
@@ -356,7 +442,9 @@ export const ExamProvider: React.FC<{ children: React.ReactNode }> = ({ children
       startExam,
       submitAnswer,
       submitExam,
-      fetchExamAttempts
+      submitExamAttempt,
+      fetchExamAttempts,
+      getExamStats
     }}>
       {children}
     </ExamContext.Provider>
